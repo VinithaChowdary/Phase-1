@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from openai import AsyncOpenAI
@@ -16,8 +17,15 @@ from supabase import create_client, Client
 
 load_dotenv()
 
-# Initialize OpenAI and Supabase clients
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Configure DeepSeek-compatible OpenAI client for title/summary
+BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+API_KEY = os.getenv("DEEPSEEK_API_KEY")
+openai_client = AsyncOpenAI(base_url=BASE_URL, api_key=API_KEY)
+
+# Configure embedding model - use local SentenceTransformer (384-dim)
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+_embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_KEY")
@@ -79,7 +87,7 @@ def chunk_text(text: str, chunk_size: int = 5000) -> List[str]:
     return chunks
 
 async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
-    """Extract title and summary using GPT-4."""
+    """Extract title and summary using the configured chat model (Groq via OpenAI API)."""
     system_prompt = """You are an AI that extracts titles and summaries from documentation chunks.
     Return a JSON object with 'title' and 'summary' keys.
     For the title: If this seems like the start of a document, extract its title. If it's a middle chunk, derive a descriptive title.
@@ -88,7 +96,7 @@ async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
     
     try:
         response = await openai_client.chat.completions.create(
-            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
+            model=os.getenv("LLM_MODEL", "deepseek-r1-distill-llama-70b"),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"URL: {url}\n\nContent:\n{chunk[:1000]}..."}  # Send first 1000 chars for context
@@ -101,16 +109,14 @@ async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
         return {"title": "Error processing title", "summary": "Error processing summary"}
 
 async def get_embedding(text: str) -> List[float]:
-    """Get embedding vector from OpenAI."""
+    """Get embedding vector using local SentenceTransformer (384-dim)."""
     try:
-        response = await openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text
-        )
-        return response.data[0].embedding
+        vec = _embedder.encode(text, normalize_embeddings=True)
+        return vec.tolist()
     except Exception as e:
         print(f"Error getting embedding: {e}")
-        return [0] * 1536  # Return zero vector on error
+        # Return zero-vector for 384-dim when error occurs
+        return [0.0] * 384
 
 async def process_chunk(chunk: str, chunk_number: int, url: str) -> ProcessedChunk:
     """Process a single chunk of text."""
@@ -139,7 +145,7 @@ async def process_chunk(chunk: str, chunk_number: int, url: str) -> ProcessedChu
     )
 
 async def insert_chunk(chunk: ProcessedChunk):
-    """Insert a processed chunk into Supabase."""
+    """Insert or update a processed chunk in Supabase."""
     try:
         data = {
             "url": chunk.url,
@@ -151,8 +157,9 @@ async def insert_chunk(chunk: ProcessedChunk):
             "embedding": chunk.embedding
         }
         
-        result = supabase.table("site_pages").insert(data).execute()
-        print(f"Inserted chunk {chunk.chunk_number} for {chunk.url}")
+        # Try to upsert the data instead of just insert
+        result = supabase.table("site_pages").upsert(data).execute()
+        print(f"Saved chunk {chunk.chunk_number} for {chunk.url}")
         return result
     except Exception as e:
         print(f"Error inserting chunk: {e}")

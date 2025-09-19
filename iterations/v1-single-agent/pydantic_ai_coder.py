@@ -12,11 +12,27 @@ from pydantic_ai.models.openai import OpenAIModel
 from openai import AsyncOpenAI
 from supabase import Client
 from typing import List
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
-llm = os.getenv('LLM_MODEL', 'gpt-4o-mini')
-model = OpenAIModel(llm)
+# Configure DeepSeek via OpenAI-compatible env vars
+_deepseek_key = os.getenv('DEEPSEEK_API_KEY')
+_deepseek_base = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
+
+# Always set these for OpenAI compatibility
+os.environ['OPENAI_API_KEY'] = _deepseek_key or ''
+os.environ['OPENAI_BASE_URL'] = _deepseek_base
+
+llm = os.getenv('LLM_MODEL', 'deepseek-chat')
+model = OpenAIModel(
+    model_name=llm,
+    api_key=_deepseek_key,
+    base_url=_deepseek_base
+)
+
+# Local embedding model
+_embedder = SentenceTransformer(os.getenv('EMBEDDING_MODEL_NAME', 'sentence-transformers/all-MiniLM-L6-v2'))
 
 logfire.configure(send_to_logfire='if-token-present')
 
@@ -69,17 +85,15 @@ pydantic_ai_coder = Agent(
     retries=2
 )
 
-async def get_embedding(text: str, openai_client: AsyncOpenAI) -> List[float]:
-    """Get embedding vector from OpenAI."""
+async def get_embedding(text: str, _unused_openai_client: AsyncOpenAI | None = None) -> List[float]:
+    """Get embedding vector using a local SentenceTransformer model."""
     try:
-        response = await openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text
-        )
-        return response.data[0].embedding
+        vec = _embedder.encode(text, normalize_embeddings=True)
+        return vec.tolist()
     except Exception as e:
         print(f"Error getting embedding: {e}")
-        return [0] * 1536  # Return zero vector on error
+        dim = getattr(_embedder, 'get_sentence_embedding_dimension', lambda: 384)()
+        return [0.0] * dim
 
 @pydantic_ai_coder.tool
 async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_query: str) -> str:
@@ -95,7 +109,7 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
     """
     try:
         # Get the embedding for the query
-        query_embedding = await get_embedding(user_query, ctx.deps.openai_client)
+        query_embedding = await get_embedding(user_query)
         
         # Query Supabase for relevant documents
         result = ctx.deps.supabase.rpc(

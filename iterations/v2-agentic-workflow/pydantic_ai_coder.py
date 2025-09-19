@@ -10,16 +10,22 @@ import os
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.models.openai import OpenAIModel
 from openai import AsyncOpenAI
+from sentence_transformers import SentenceTransformer
 from supabase import Client
 from typing import List
 
 load_dotenv()
 
+# Configure DeepSeek endpoint and local embeddings
+_deepseek_key = os.getenv('DEEPSEEK_API_KEY')
+_deepseek_base = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
+_embedder = SentenceTransformer(os.getenv('EMBEDDING_MODEL_NAME', 'sentence-transformers/all-MiniLM-L6-v2'))
+
 llm = os.getenv('PRIMARY_MODEL', 'gpt-4o-mini')
-base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
-api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
+# Use DeepSeek endpoint and key
+base_url = _deepseek_base
+api_key = _deepseek_key or ''
 model = OpenAIModel(llm, base_url=base_url, api_key=api_key)
-embedding_model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 
 logfire.configure(send_to_logfire='if-token-present')
 
@@ -135,17 +141,15 @@ def add_reasoner_output(ctx: RunContext[str]) -> str:
     # Add this in to get some crazy tool calling:
     # You must get ALL documentation pages listed in the scope.
 
-async def get_embedding(text: str, openai_client: AsyncOpenAI) -> List[float]:
-    """Get embedding vector from OpenAI."""
+async def get_embedding(text: str) -> List[float]:
+    """Get embedding vector using local SentenceTransformer."""
     try:
-        response = await openai_client.embeddings.create(
-            model= embedding_model,
-            input=text
-        )
-        return response.data[0].embedding
+        vec = _embedder.encode(text, normalize_embeddings=True)
+        return vec.tolist()
     except Exception as e:
         print(f"Error getting embedding: {e}")
-        return [0] * 1536  # Return zero vector on error
+        dim_fn = getattr(_embedder, 'get_sentence_embedding_dimension', lambda: len(vec) if 'vec' in locals() else 384)
+        return [0.0] * dim_fn()
 
 @pydantic_ai_coder.tool
 async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_query: str) -> str:
@@ -161,7 +165,7 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
     """
     try:
         # Get the embedding for the query
-        query_embedding = await get_embedding(user_query, ctx.deps.openai_client)
+        query_embedding = await get_embedding(user_query)
         
         # Query Supabase for relevant documents
         result = ctx.deps.supabase.rpc(

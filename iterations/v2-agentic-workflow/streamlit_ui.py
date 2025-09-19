@@ -30,16 +30,11 @@ from archon_graph import agentic_flow
 from dotenv import load_dotenv
 load_dotenv()
 
-openai_client=None
-
-base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
-api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
-is_ollama = "localhost" in base_url.lower()
-
-if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
-else:
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_deepseek_key = os.getenv('DEEPSEEK_API_KEY')
+_deepseek_base = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
+os.environ['OPENAI_API_KEY'] = _deepseek_key or ''
+os.environ['OPENAI_BASE_URL'] = _deepseek_base
+openai_client = AsyncOpenAI(base_url=_deepseek_base, api_key=_deepseek_key)
 
 supabase: Client = Client(
     os.getenv("SUPABASE_URL"),

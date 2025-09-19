@@ -6,7 +6,7 @@ import os
 import streamlit as st
 import json
 import logfire
-from supabase import Client
+from supabase import create_client, Client
 from openai import AsyncOpenAI
 
 # Import all the message part classes
@@ -28,8 +28,10 @@ from pydantic_ai_coder import pydantic_ai_coder, PydanticAIDeps
 from dotenv import load_dotenv
 load_dotenv()
 
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-supabase: Client = Client(
+base_url = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
+api_key = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
+openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_KEY")
 )

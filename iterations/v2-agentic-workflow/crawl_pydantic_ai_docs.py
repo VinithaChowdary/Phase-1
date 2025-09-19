@@ -16,25 +16,20 @@ from supabase import create_client, Client
 
 load_dotenv()
 
-# Initialize OpenAI and Supabase clients
-
-base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
-api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
-is_ollama = "localhost" in base_url.lower()
-
-embedding_model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
-
-openai_client=None
-
-if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
-else:
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from sentence_transformers import SentenceTransformer
+# Configure DeepSeek API
+_deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+_deepseek_base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+# Load local embedding model
+_embedder = SentenceTransformer(os.getenv('EMBEDDING_MODEL_NAME', 'sentence-transformers/all-MiniLM-L6-v2'))
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_KEY")
 )
+
+# Async client for DeepSeek chat and completions
+openai_client = AsyncOpenAI(base_url=_deepseek_base, api_key=_deepseek_key)
 
 @dataclass
 class ProcessedChunk:
@@ -114,16 +109,14 @@ async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
         return {"title": "Error processing title", "summary": "Error processing summary"}
 
 async def get_embedding(text: str) -> List[float]:
-    """Get embedding vector from OpenAI."""
+    """Get embedding vector using local SentenceTransformer model."""
     try:
-        response = await openai_client.embeddings.create(
-            model= embedding_model,
-            input=text
-        )
-        return response.data[0].embedding
+        vec = _embedder.encode(text, normalize_embeddings=True)
+        return vec.tolist()
     except Exception as e:
         print(f"Error getting embedding: {e}")
-        return [0] * 1536  # Return zero vector on error
+        dim = getattr(_embedder, 'get_sentence_embedding_dimension', lambda: len(vec))()
+        return [0.0] * dim
 
 async def process_chunk(chunk: str, chunk_number: int, url: str) -> ProcessedChunk:
     """Process a single chunk of text."""

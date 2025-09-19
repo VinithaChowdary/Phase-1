@@ -18,6 +18,8 @@ load_dotenv()
 llm = os.getenv('PRIMARY_MODEL', 'gpt-4o-mini')
 base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
 api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
+client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+# Instantiate OpenAIModel directly with URL and API key
 model = OpenAIModel(llm, base_url=base_url, api_key=api_key)
 embedding_model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 

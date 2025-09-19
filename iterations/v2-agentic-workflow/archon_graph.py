@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from typing import TypedDict, Annotated, List, Any
 from langgraph.config import get_stream_writer
-from langgraph.types import interrupt
+from langgraph.types import Command
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from supabase import Client
@@ -22,11 +22,17 @@ from pydantic_ai_coder import pydantic_ai_coder, PydanticAIDeps, list_documentat
 # Load environment variables
 load_dotenv()
 
+# Configure DeepSeek as OpenAI-compatible endpoint
+_deepseek_key = os.getenv('DEEPSEEK_API_KEY')
+_deepseek_base = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
+# configure DeepSeek credentials
+# (no need to set OPENAI_* vars since we pass base_url/api_key directly)
+
 # Configure logfire to suppress warnings (optional)
 logfire.configure(send_to_logfire='never')
 
-base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
-api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
+base_url = _deepseek_base
+api_key = _deepseek_key or ''
 is_ollama = "localhost" in base_url.lower()
 reasoner_llm_model = os.getenv('REASONER_MODEL', 'o3-mini')
 reasoner = Agent(  
@@ -48,9 +54,9 @@ end_conversation_agent = Agent(
 openai_client=None
 
 if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
+    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 else:
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    openai_client = AsyncOpenAI(base_url=_deepseek_base, api_key=_deepseek_key)
 
 supabase: Client = Client(
     os.getenv("SUPABASE_URL"),
@@ -112,33 +118,39 @@ async def coder_agent(state: AgentState, writer):
     for message_row in state['messages']:
         message_history.extend(ModelMessagesTypeAdapter.validate_json(message_row))
 
-    # Run the agent in a stream
-    if is_ollama:
-        writer = get_stream_writer()
-        result = await pydantic_ai_coder.run(state['latest_user_message'], deps=deps, message_history= message_history)
-        writer(result.data)
-    else:
-        async with pydantic_ai_coder.run_stream(
-            state['latest_user_message'],
-            deps=deps,
-            message_history= message_history
-        ) as result:
-            # Stream partial text as it arrives
-            async for chunk in result.stream_text(delta=True):
-                writer(chunk)
+    # Run the agent and return full response immediately
+    result = await pydantic_ai_coder.run(
+        state['latest_user_message'], deps=deps, message_history=message_history
+    )
+    # Output complete response
+    writer(result.data)
 
     # print(ModelMessagesTypeAdapter.validate_json(result.new_messages_json()))
 
     return {"messages": [result.new_messages_json()]}
 
 # Interrupt the graph to get the user's next message
-def get_next_user_message(state: AgentState):
-    value = interrupt({})
-
-    # Set the user's latest message for the LLM to continue the conversation
-    return {
-        "latest_user_message": value
-    }
+async def get_next_user_message(*args):
+    """
+    Accepts either:
+      - A Command(resume=...) alone, or
+      - (state_dict, Command(resume=...)), or
+      - A state_dict without Command.
+    Returns a dict updating 'latest_user_message'.
+    """
+    from langgraph.types import Command as _Cmd
+    resume = None
+    # Check for Command in args
+    for arg in args:
+        if isinstance(arg, _Cmd):
+            resume = arg.resume
+            break
+    # If no Command, check for state dict
+    if resume is None and args:
+        state = args[0]
+        if isinstance(state, dict) and 'latest_user_message' in state:
+            resume = state.get('latest_user_message')
+    return {'latest_user_message': resume}
 
 # Determine if the user is finished creating their AI agent or not
 async def route_user_message(state: AgentState):
@@ -191,15 +203,10 @@ builder.add_node("coder_agent", coder_agent)
 builder.add_node("get_next_user_message", get_next_user_message)
 builder.add_node("finish_conversation", finish_conversation)
 
-# Set edges
+# Set edges: define scope -> coder -> finish (straight-through)
 builder.add_edge(START, "define_scope_with_reasoner")
 builder.add_edge("define_scope_with_reasoner", "coder_agent")
-builder.add_edge("coder_agent", "get_next_user_message")
-builder.add_conditional_edges(
-    "get_next_user_message",
-    route_user_message,
-    {"coder_agent": "coder_agent", "finish_conversation": "finish_conversation"}
-)
+builder.add_edge("coder_agent", "finish_conversation")
 builder.add_edge("finish_conversation", END)
 
 # Configure persistence

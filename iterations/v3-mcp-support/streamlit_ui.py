@@ -37,12 +37,9 @@ load_dotenv()
 openai_client=None
 base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
 api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
-is_ollama = "localhost" in base_url.lower()
 
-if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
-else:
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Unified client initialization
+openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 supabase: Client = Client(
     os.getenv("SUPABASE_URL"),

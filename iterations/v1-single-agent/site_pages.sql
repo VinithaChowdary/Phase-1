@@ -10,7 +10,7 @@ create table site_pages (
     summary varchar not null,
     content text not null,  -- Added content column
     metadata jsonb not null default '{}'::jsonb,  -- Added metadata column
-    embedding vector(1536),  -- OpenAI embeddings are 1536 dimensions
+    embedding vector(384),  -- sentence-transformers/all-MiniLM-L6-v2 embeddings are 384 dimensions
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     
     -- Add a unique constraint to prevent duplicate chunks for the same URL

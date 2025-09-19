@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from openai import AsyncOpenAI
 from supabase import create_client, Client
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
@@ -23,13 +24,13 @@ api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
 is_ollama = "localhost" in base_url.lower()
 
 embedding_model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
+# Load local embedding model for fallback (384-dim)
+hf_embedding_model = SentenceTransformer(embedding_model)
 
-openai_client=None
-
-if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
-else:
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+"""
+Initialize AsyncOpenAI client using BASE_URL and LLM_API_KEY (compatible with DeepSeek/OpenAI/Ollama)
+"""
+openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
@@ -114,16 +115,29 @@ async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
         return {"title": "Error processing title", "summary": "Error processing summary"}
 
 async def get_embedding(text: str) -> List[float]:
-    """Get embedding vector from OpenAI."""
+    """Get embedding vector from DeepSeek/OpenAI or fallback to local model."""
+    # If using DeepSeek (no embeddings endpoint), skip remote and use local
+    if 'deepseek.com' in base_url:
+        arr = await asyncio.to_thread(hf_embedding_model.encode, text)
+        return arr.tolist()
+    # Otherwise attempt remote embedding first
     try:
         response = await openai_client.embeddings.create(
-            model= embedding_model,
+            model=embedding_model,
             input=text
         )
         return response.data[0].embedding
-    except Exception as e:
-        print(f"Error getting embedding: {e}")
-        return [0] * 1536  # Return zero vector on error
+    except Exception as remote_err:
+        print(f"Remote embedding failed: {remote_err}")
+        # Fallback to local SentenceTransformer
+        try:
+            local_emb = await asyncio.to_thread(hf_embedding_model.encode, text)
+            return local_emb.tolist()
+        except Exception as local_err:
+            print(f"Local embedding failed: {local_err}")
+            # Return zero vector matching local model dimension
+            dim = hf_embedding_model.get_sentence_embedding_dimension()
+            return [0.0] * dim
 
 async def process_chunk(chunk: str, chunk_number: int, url: str) -> ProcessedChunk:
     """Process a single chunk of text."""
@@ -168,6 +182,11 @@ async def insert_chunk(chunk: ProcessedChunk):
         print(f"Inserted chunk {chunk.chunk_number} for {chunk.url}")
         return result
     except Exception as e:
+        # Supabase returns a 409 for duplicate entries
+        msg = str(e)
+        if 'duplicate key' in msg.lower() or getattr(e, 'code', '') == '23505':
+            print(f"Skipping duplicate chunk {chunk.chunk_number} for {chunk.url}")
+            return None
         print(f"Error inserting chunk: {e}")
         return None
 
