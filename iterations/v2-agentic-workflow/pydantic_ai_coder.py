@@ -1,3 +1,31 @@
+'''
+V1 vs V2 pydantic_ai_coder.py:
+
+Planning Protocol:
+
+v1 (single-agent): Enforces a strict planning protocol—must call propose_next_action tool first, then documentation tools, then output. Uses a PlanAction model for explicit step planning.
+v2: No explicit planning tool or protocol; agent can call documentation tools directly.
+System Prompt:
+
+v1: Shorter, focused on tool call order and protocol.
+v2: Much longer, covers agent engineering best practices, file structure, error handling, and documentation workflow.
+Dependencies:
+
+v1: PydanticAIDeps has only supabase and openai_client.
+v2: Adds reasoner_output for richer context.
+Tooling:
+
+v1: Has a planning tool (propose_next_action) and stricter tool call discipline.
+v2: No planning tool, but more detailed docstring and workflow instructions.
+Other:
+
+v1: More rigid, stepwise, and protocol-driven.
+v2: More flexible, context-rich, and focused on best practices and completeness.
+In summary: v1 is strict and stepwise; v2 is more flexible and comprehensive.
+
+'''
+
+
 from __future__ import annotations as _annotations
 
 from dataclasses import dataclass

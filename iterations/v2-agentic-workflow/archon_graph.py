@@ -10,6 +10,7 @@ from openai import AsyncOpenAI
 from supabase import Client
 import logfire
 import os
+from openai import BadRequestError
 
 # Import the message classes from Pydantic AI
 from pydantic_ai.messages import (
@@ -119,9 +120,26 @@ async def coder_agent(state: AgentState, writer):
         message_history.extend(ModelMessagesTypeAdapter.validate_json(message_row))
 
     # Run the agent and return full response immediately
-    result = await pydantic_ai_coder.run(
-        state['latest_user_message'], deps=deps, message_history=message_history
-    )
+    try:
+        result = await pydantic_ai_coder.run(
+            state['latest_user_message'], deps=deps, message_history=message_history
+        )
+    except BadRequestError as e:
+        # Handle OpenAI-compatible providers strict tool call protocol errors
+        msg = str(e)
+        if "tool_calls" in msg and "insufficient tool messages" in msg:
+            # Fallback: retry with a clean history to ensure the tool-call sequence is valid
+            try:
+                writer("[note] Recovering from tool-calls sequencing issue. Retrying with a fresh context...\n")
+            except Exception:
+                # writer may not accept strings in some stream modes; ignore
+                pass
+            result = await pydantic_ai_coder.run(
+                state['latest_user_message'], deps=deps, message_history=[]
+            )
+        else:
+            raise
+
     # Output complete response
     writer(result.data)
 

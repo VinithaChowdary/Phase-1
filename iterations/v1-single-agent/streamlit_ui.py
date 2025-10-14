@@ -1,15 +1,15 @@
 from __future__ import annotations
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, Any
 import asyncio
 import os
+import json
 
 import streamlit as st
-import json
 import logfire
+from dotenv import load_dotenv
 from supabase import create_client, Client
 from openai import AsyncOpenAI
 
-# Import all the message part classes
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -20,126 +20,170 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
     RetryPromptPart,
-    ModelMessagesTypeAdapter
+    ModelMessagesTypeAdapter,
 )
+# Streaming/event imports with graceful fallback for older versions
+try:
+    from pydantic_ai import (
+        AgentStreamEvent,
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        PartDeltaEvent,
+        PartStartEvent,
+        TextPartDelta,
+        ToolCallPartDelta,
+        FinalResultEvent,
+        RunContext,
+    )
+except Exception:  # pragma: no cover - compatibility layer
+    from typing import Any
+
+    AgentStreamEvent = Any  # type: ignore
+    FunctionToolCallEvent = None  # type: ignore
+    FunctionToolResultEvent = None  # type: ignore
+    PartDeltaEvent = None  # type: ignore
+    PartStartEvent = None  # type: ignore
+    TextPartDelta = None  # type: ignore
+    ToolCallPartDelta = None  # type: ignore
+    FinalResultEvent = None  # type: ignore
+    RunContext = Any  # type: ignore
+
 from pydantic_ai_coder import pydantic_ai_coder, PydanticAIDeps
 
-# Load environment variables
-from dotenv import load_dotenv
+# -----------------------------------------------------------------------------
+# Unified config (matches pydantic_ai_coder.py)
+# -----------------------------------------------------------------------------
 load_dotenv()
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or ""
+openai_client = AsyncOpenAI(base_url=OPENAI_BASE_URL, api_key=OPENAI_API_KEY)
 
-base_url = os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
-api_key = os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
-openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_KEY")
+    os.getenv("SUPABASE_SERVICE_KEY"),
 )
 
-# Configure logfire to suppress warnings (optional)
-logfire.configure(send_to_logfire='never')
+logfire.configure(send_to_logfire="never")
 
 class ChatMessage(TypedDict):
-    """Format of messages sent to the browser/API."""
-
-    role: Literal['user', 'model']
+    role: Literal["user", "model"]
     timestamp: str
     content: str
 
+# -----------------------------------------------------------------------------
+# Rendering helpers
+# -----------------------------------------------------------------------------
+def display_message_part(part: Any) -> None:
+    """Render different part types in Streamlit."""
+    kind = getattr(part, "part_kind", None)
+    content = getattr(part, "content", None)
 
-def display_message_part(part):
-    """
-    Display a single part of a message in the Streamlit UI.
-    Customize how you display system prompts, user prompts,
-    tool calls, tool returns, etc.
-    """
-    # system-prompt
-    if part.part_kind == 'system-prompt':
+    if kind == "system-prompt":
         with st.chat_message("system"):
-            st.markdown(f"**System**: {part.content}")
-    # user-prompt
-    elif part.part_kind == 'user-prompt':
+            st.markdown(f"**System**: {content}")
+    elif kind == "user-prompt":
         with st.chat_message("user"):
-            st.markdown(part.content)
-    # text
-    elif part.part_kind == 'text':
+            st.markdown(content)
+    elif kind == "text":
         with st.chat_message("assistant"):
-            st.markdown(part.content)          
+            st.markdown(content)
+    elif kind == "tool-call":
+        # Tool call details
+        name = getattr(part, "tool_name", "tool")
+        args = getattr(part, "args", {})
+        with st.chat_message("assistant"):
+            st.markdown(f"🛠️ **Calling tool:** `{name}`")
+            st.code(json.dumps(args, indent=2))
+    elif kind == "tool-return":
+        name = getattr(part, "tool_name", "tool")
+        result = getattr(part, "result", None)
+        with st.chat_message("assistant"):
+            st.markdown(f"📥 **Tool result from:** `{name}`")
+            if isinstance(result, (dict, list)):
+                st.code(json.dumps(result, indent=2))
+            else:
+                st.markdown(result if result else "_(empty)_")
 
-
-async def run_agent_with_streaming(user_input: str):
+# -----------------------------------------------------------------------------
+# Runner
+# -----------------------------------------------------------------------------
+async def run_agent_with_streaming(user_input: str) -> None:
     """
-    Run the agent with streaming text for the user_input prompt,
-    while maintaining the entire conversation in `st.session_state.messages`.
+    Non-streaming path: call Agent.run() and display the final output.
+    Also refresh message_history so future turns keep context.
     """
-    # Prepare dependencies
-    deps = PydanticAIDeps(
-        supabase=supabase,
-        openai_client=openai_client
-    )
+    deps = PydanticAIDeps(supabase=supabase, openai_client=openai_client)
 
-    # Run the agent in a stream
-    async with pydantic_ai_coder.run_stream(
-        user_input,
-        deps=deps,
-        message_history= st.session_state.messages[:-1],  # pass entire conversation so far
-    ) as result:
-        # We'll gather partial text to show incrementally
-        partial_text = ""
-        message_placeholder = st.empty()
+    def _extract_output_text(run_result: Any) -> str:
+        # Try common property
+        txt = getattr(run_result, "output", None)
+        if isinstance(txt, str) and txt:
+            return txt
+        # Build from messages as fallback
+        messages = []
+        try:
+            messages = run_result.all_messages()
+        except Exception:
+            pass
+        pieces: list[str] = []
+        for m in messages:
+            if isinstance(m, ModelResponse):
+                for p in getattr(m, "parts", []):
+                    if getattr(p, "part_kind", None) == "text":
+                        c = getattr(p, "content", "")
+                        if isinstance(c, str):
+                            pieces.append(c)
+        joined = "".join(pieces).strip()
+        return joined or "(no text output)"
 
-        # Render partial text as it arrives
-        async for chunk in result.stream_text(delta=True):
-            partial_text += chunk
-            message_placeholder.markdown(partial_text)
-
-        # Now that the stream is finished, we have a final result.
-        # Add new messages from this run, excluding user-prompt messages
-        filtered_messages = [msg for msg in result.new_messages() 
-                            if not (hasattr(msg, 'parts') and 
-                                    any(part.part_kind == 'user-prompt' for part in msg.parts))]
-        st.session_state.messages.extend(filtered_messages)
-
-        # Add the final response to the messages
-        st.session_state.messages.append(
-            ModelResponse(parts=[TextPart(content=partial_text)])
+    with st.spinner("Thinking..."):
+        result = await pydantic_ai_coder.run(
+            user_input,
+            deps=deps,
+            # Exclude the last user message we just appended to avoid duplication
+            message_history=st.session_state.messages[:-1],
         )
 
+    # Show final model output immediately
+    with st.chat_message("assistant"):
+        st.markdown(_extract_output_text(result))
 
-async def main():
-    st.title("Archon - Agent Builder")
-    st.write("Describe to me an AI agent you want to build and I'll code it for you with Pydantic AI.")
+    # Update session history for next turn
+    try:
+        st.session_state.messages = result.new_messages()
+    except Exception:
+        # Fallback to full messages if new_messages is unavailable
+        try:
+            st.session_state.messages = result.all_messages()
+        except Exception:
+            # Last resort: append final text part only
+            st.session_state.messages.append(ModelResponse(parts=[TextPart(content=str(result.output))]))
 
-    # Initialize chat history in session state if not present
+# -----------------------------------------------------------------------------
+# App
+# -----------------------------------------------------------------------------
+async def main() -> None:
+    st.title("Archon - Agent Builder (V1 RAG)")
+    st.write("Describe an AI agent you want to build. I’ll help you code it with Pydantic AI.")
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Display all messages from the conversation so far
-    # Each message is either a ModelRequest or ModelResponse.
-    # We iterate over their parts to decide how to display them.
+    # Render history
     for msg in st.session_state.messages:
-        if isinstance(msg, ModelRequest) or isinstance(msg, ModelResponse):
+        if isinstance(msg, (ModelRequest, ModelResponse)):
             for part in msg.parts:
                 display_message_part(part)
 
-    # Chat input for the user
+    # Chat input
     user_input = st.chat_input("What do you want to build today?")
-
     if user_input:
-        # We append a new request to the conversation explicitly
-        st.session_state.messages.append(
-            ModelRequest(parts=[UserPromptPart(content=user_input)])
-        )
-        
-        # Display user prompt in the UI
+        # Append user turn
+        st.session_state.messages.append(ModelRequest(parts=[UserPromptPart(content=user_input)]))
         with st.chat_message("user"):
             st.markdown(user_input)
-
-        # Display the assistant's partial response while streaming
-        with st.chat_message("assistant"):
-            # Actually run the agent now, streaming the text
-            await run_agent_with_streaming(user_input)
-
+        # run_agent_with_streaming renders the assistant response itself
+        await run_agent_with_streaming(user_input)
 
 if __name__ == "__main__":
     asyncio.run(main())
