@@ -34,6 +34,8 @@ import logfire
 import asyncio
 import httpx
 import os
+from datetime import datetime
+from colorama import Fore, Back, Style, init
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.models.openai import OpenAIModel
@@ -42,7 +44,35 @@ from sentence_transformers import SentenceTransformer
 from supabase import Client
 from typing import List
 
+# Initialize colorama for Windows support
+init(autoreset=True)
+
 load_dotenv()
+
+# Logging helpers
+def log_info(message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{Fore.CYAN}[{timestamp}] ℹ️  {message}{Style.RESET_ALL}")
+
+def log_success(message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{Fore.GREEN}[{timestamp}] ✅ {message}{Style.RESET_ALL}")
+
+def log_warning(message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{Fore.YELLOW}[{timestamp}] ⚠️  {message}{Style.RESET_ALL}")
+
+def log_error(message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{Fore.RED}[{timestamp}] ❌ {message}{Style.RESET_ALL}")
+
+def log_tool(tool_name: str, message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{Fore.MAGENTA}[{timestamp}] 🔧 [{tool_name}] {message}{Style.RESET_ALL}")
+
+def log_agent(agent_name: str, message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{Fore.BLUE}[{timestamp}] 🤖 [{agent_name}] {message}{Style.RESET_ALL}")
 
 # Configure DeepSeek endpoint and local embeddings
 _deepseek_key = os.getenv('DEEPSEEK_API_KEY')
@@ -158,6 +188,8 @@ pydantic_ai_coder = Agent(
     retries=2
 )
 
+log_info(f"Initialized Pydantic AI Coder Agent with model: {llm}")
+
 @pydantic_ai_coder.system_prompt  
 def add_reasoner_output(ctx: RunContext[str]) -> str:
     return f"""
@@ -172,10 +204,12 @@ def add_reasoner_output(ctx: RunContext[str]) -> str:
 async def get_embedding(text: str) -> List[float]:
     """Get embedding vector using local SentenceTransformer."""
     try:
+        log_tool("Embedding", f"Generating embedding for text (length: {len(text)} chars)")
         vec = _embedder.encode(text, normalize_embeddings=True)
+        log_success(f"Embedding generated successfully (dim: {len(vec.tolist())})")
         return vec.tolist()
     except Exception as e:
-        print(f"Error getting embedding: {e}")
+        log_error(f"Error getting embedding: {e}")
         dim_fn = getattr(_embedder, 'get_sentence_embedding_dimension', lambda: len(vec) if 'vec' in locals() else 384)
         return [0.0] * dim_fn()
 
@@ -191,10 +225,12 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
     Returns:
         A formatted string containing the top 5 most relevant documentation chunks
     """
+    log_tool("RAG", f"Retrieving documentation for query: '{user_query[:50]}...'")
     try:
         # Get the embedding for the query
         query_embedding = await get_embedding(user_query)
         
+        log_info("Querying Supabase for relevant documents...")
         # Query Supabase for relevant documents
         result = ctx.deps.supabase.rpc(
             'match_site_pages',
@@ -206,11 +242,15 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         ).execute()
         
         if not result.data:
+            log_warning("No relevant documentation found")
             return "No relevant documentation found."
-            
+        
+        log_success(f"Retrieved {len(result.data)} relevant documentation chunks")
+        
         # Format the results
         formatted_chunks = []
-        for doc in result.data:
+        for i, doc in enumerate(result.data, 1):
+            log_info(f"  [{i}] {doc.get('title', 'Untitled')}")
             chunk_text = f"""
 # {doc['title']}
 
@@ -222,7 +262,7 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         return "\n\n---\n\n".join(formatted_chunks)
         
     except Exception as e:
-        print(f"Error retrieving documentation: {e}")
+        log_error(f"Error retrieving documentation: {e}")
         return f"Error retrieving documentation: {str(e)}"
 
 async def list_documentation_pages_helper(supabase: Client) -> List[str]:
@@ -235,6 +275,7 @@ async def list_documentation_pages_helper(supabase: Client) -> List[str]:
         List[str]: List of unique URLs for all documentation pages
     """
     try:
+        log_info("Querying all available documentation pages...")
         # Query Supabase for unique URLs where source is pydantic_ai_docs
         result = supabase.from_('site_pages') \
             .select('url') \
@@ -242,14 +283,16 @@ async def list_documentation_pages_helper(supabase: Client) -> List[str]:
             .execute()
         
         if not result.data:
+            log_warning("No documentation pages found")
             return []
             
         # Extract unique URLs
         urls = sorted(set(doc['url'] for doc in result.data))
+        log_success(f"Found {len(urls)} unique documentation pages")
         return urls
         
     except Exception as e:
-        print(f"Error retrieving documentation pages: {e}")
+        log_error(f"Error retrieving documentation pages: {e}")
         return []        
 
 @pydantic_ai_coder.tool
@@ -260,6 +303,7 @@ async def list_documentation_pages(ctx: RunContext[PydanticAIDeps]) -> List[str]
     Returns:
         List[str]: List of unique URLs for all documentation pages
     """
+    log_tool("List Pages", "Listing all documentation pages")
     return await list_documentation_pages_helper(ctx.deps.supabase)
 
 @pydantic_ai_coder.tool
@@ -274,6 +318,7 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
     Returns:
         str: The complete page content with all chunks combined in order
     """
+    log_tool("Fetch Page", f"Retrieving page content from: {url}")
     try:
         # Query Supabase for all chunks of this URL, ordered by chunk_number
         result = ctx.deps.supabase.from_('site_pages') \
@@ -284,10 +329,14 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
             .execute()
         
         if not result.data:
+            log_warning(f"No content found for URL: {url}")
             return f"No content found for URL: {url}"
-            
+        
+        log_success(f"Retrieved {len(result.data)} chunks for page")
+        
         # Format the page with its title and all chunks
         page_title = result.data[0]['title'].split(' - ')[0]  # Get the main title
+        log_info(f"Page title: {page_title}")
         formatted_content = [f"# {page_title}\n"]
         
         # Add each chunk's content
@@ -298,5 +347,5 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
         return "\n\n".join(formatted_content)
         
     except Exception as e:
-        print(f"Error retrieving page content: {e}")
+        log_error(f"Error retrieving page content: {e}")
         return f"Error retrieving page content: {str(e)}"
