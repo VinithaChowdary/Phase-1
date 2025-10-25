@@ -1,0 +1,18 @@
+# Python virtual environments
+venv/
+.env
+*.env
+__pycache__/
+# VS Code settings
+.vscode/
+# Byte-compiled / optimized / DLL files
+*.pyc
+*.pyo
+*.pyd
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+# Other common ignores
+.DS_Store
+Thumbs.db

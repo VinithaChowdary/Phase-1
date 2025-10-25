@@ -163,7 +163,7 @@ async def run_agent_with_streaming(user_input: str) -> None:
 # App
 # -----------------------------------------------------------------------------
 async def main() -> None:
-    st.title("Archon - Agent Builder (V1 RAG)")
+    st.title("Agent Builder (V1 RAG)")
     st.write("Describe an AI agent you want to build. I’ll help you code it with Pydantic AI.")
 
     if "messages" not in st.session_state:
