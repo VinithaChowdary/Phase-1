@@ -12,7 +12,7 @@ import uvicorn
 
 
 # Initialize FastMCP server
-mcp = FastMCP("archon")
+mcp = FastMCP("Meta Agent MCP Server")
 
 
 # Store active threads
@@ -25,8 +25,8 @@ GRAPH_SERVICE_URL = "http://127.0.0.1:8100"
 
 @mcp.tool()
 async def create_thread() -> str:
-    """Create a new conversation thread for Archon.
-    Always call this tool before invoking Archon for the first time in a conversation.
+    """Create a new conversation thread for Meta Agent.
+    Always call this tool before invoking Meta Agent for the first time in a conversation.
     (if you don't already have a thread ID)
     
     Returns:
@@ -55,10 +55,10 @@ def _make_request(thread_id: str, user_input: str, config: dict) -> str:
 
 @mcp.tool()
 async def run_agent(thread_id: str, user_input: str) -> str:
-    """Run the Archon agent with user input.
+    """Run the Meta Agent agent with user input.
     Only use this tool after you have called create_thread in this conversation to get a unique thread ID.
     If you already created a thread ID in this conversation, do not create another one. Reuse the same ID.
-    After you receive the code from Archon, always implement it into the codebase unless asked not to.
+    After you receive the code from Meta Agent, always implement it into the codebase unless asked not to.
     
     Args:
         thread_id: The conversation thread ID

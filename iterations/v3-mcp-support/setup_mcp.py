@@ -21,10 +21,9 @@ def setup_venv():
     # Install requirements if we just created the venv
     if venv_created:
         print("\nInstalling requirements...")
-        # Use the venv's pip to install requirements
-        pip_path = os.path.join(venv_path, 'Scripts', 'pip.exe')
+        # Use the 'uv' wrapper to run pip (as requested): `uv pip install -r requirements.txt`
         requirements_path = os.path.join(base_path, 'requirements.txt')
-        subprocess.run([pip_path, 'install', '-r', requirements_path], check=True)
+        subprocess.run(['uv', 'pip', 'install', '-r', requirements_path], check=True)
         print("Requirements installed successfully!")
 
 def generate_mcp_config():
@@ -38,7 +37,7 @@ def generate_mcp_config():
     # Create the config dictionary
     config = {
         "mcpServers": {
-            "archon": {
+            "meta_agent": {
                 "command": python_path,
                 "args": [server_script_path]
             }

@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-from archon.archon_graph import agentic_flow
 from langgraph.types import Command
 from utils.utils import write_to_log
 
@@ -33,6 +32,10 @@ async def invoke_agent(request: InvokeRequest):
         dict: Contains the complete response from the agent
     """
     try:
+        # Lazy import to avoid heavy startup cost and potential timeouts during server boot.
+        # This ensures the /health endpoint works even if model downloads are needed later.
+        from meta_agent.agent_graph import agentic_flow
+
         config = request.config or {
             "configurable": {
                 "thread_id": request.thread_id

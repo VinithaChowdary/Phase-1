@@ -1,15 +1,12 @@
 from __future__ import annotations
-from typing import Literal, TypedDict
 from langgraph.types import Command
 from openai import AsyncOpenAI
 from supabase import Client
 import streamlit as st
 import logfire
 import asyncio
-import json
 import uuid
 import os
-import sys
 
 # Import all the message part classes
 from pydantic_ai.messages import (
@@ -25,21 +22,26 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter
 )
 
-# Add the current directory to Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from archon.archon_graph import agentic_flow
+from meta_agent.agent_graph import agentic_flow
 
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
 
+# Use Deepseek as the LLM provider via the OpenAI-compatible client
+_deepseek_key = os.getenv('DEEPSEEK_API_KEY')
+_deepseek_base = os.getenv('DEEPSEEK_URL', 'https://api.deepseek.com')
+# expose compatible environment variables for libraries expecting OpenAI-style env vars
+if _deepseek_key:
+    os.environ['OPENAI_API_KEY'] = _deepseek_key
+os.environ['OPENAI_BASE_URL'] = _deepseek_base
 
-openai_client=None
-base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
-api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
+# Expose model names (can be overridden via env)
+REASONER_MODEL = os.getenv('REASONER_MODEL', 'deepseek-reasoner')
+PRIMARY_MODEL = os.getenv('PRIMARY_MODEL', 'deepseek-chat')
 
-# Unified client initialization
-openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+# Unified client initialization using Deepseek
+openai_client = AsyncOpenAI(base_url=_deepseek_base, api_key=_deepseek_key)
 
 supabase: Client = Client(
     os.getenv("SUPABASE_URL"),
@@ -81,7 +83,7 @@ async def run_agent_with_streaming(user_input: str):
 
 
 async def main():
-    st.title("Archon - Agent Builder")
+    st.title("Meta Agent - Agent Builder")
     st.write("Describe to me an AI agent you want to build and I'll code it for you with Pydantic AI.")
     st.write("Example: Build me an AI agent that can search the web with the Brave API.")
 

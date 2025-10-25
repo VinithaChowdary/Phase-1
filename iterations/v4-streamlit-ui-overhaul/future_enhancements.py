@@ -829,3 +829,16 @@ def future_enhancements_tab():
         """)
         
         st.info("This integration will allow Archon to operate fully offline with local models for both agent creation and execution.")
+
+
+if __name__ == "__main__":
+    # When run directly, show this page as a standalone Streamlit app.
+    # Use a wide layout for better visuals.
+    try:
+        st.set_page_config(page_title="Archon — Future Enhancements", layout="wide")
+    except Exception:
+        # set_page_config must be called before other Streamlit commands; if it's too late,
+        # ignore the error and continue to render the UI.
+        pass
+
+    future_enhancements_tab()

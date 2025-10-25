@@ -2,6 +2,7 @@
 workbench
 __pycache__
 venv
+myenv/
 .langgraph_api
 
 # Files
