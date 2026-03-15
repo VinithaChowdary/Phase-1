@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Simple script to build and run Archon Docker containers.
+Simple script to build and run Meta_agent Docker containers.
 """
 
 import os
@@ -45,7 +45,7 @@ def check_docker():
         return False
 
 def main():
-    """Main function to build and run Archon containers."""
+    """Main function to build and run Meta_agent containers."""
     # Check if Docker is available
     if not check_docker():
         return 1
@@ -63,28 +63,28 @@ def main():
         print("No .env file found. Continuing without environment variables.")
     
     # Build the MCP container
-    print("\n=== Building Archon MCP container ===")
+    print("\n=== Building Meta_agent MCP container ===")
     mcp_dir = base_dir / "mcp"
-    if run_command(["docker", "build", "-t", "archon-mcp:latest", "."], cwd=mcp_dir) != 0:
+    if run_command(["docker", "build", "-t", "meta_agent-mcp:latest", "."], cwd=mcp_dir) != 0:
         print("Error building MCP container")
         return 1
     
-    # Build the main Archon container
-    print("\n=== Building main Archon container ===")
-    if run_command(["docker", "build", "-t", "archon:latest", "."], cwd=base_dir) != 0:
-        print("Error building main Archon container")
+    # Build the main Meta_agent container
+    print("\n=== Building main Meta_agent container ===")
+    if run_command(["docker", "build", "-t", "meta_agent:latest", "."], cwd=base_dir) != 0:
+        print("Error building main Meta_agent container")
         return 1
     
     # Check if the container exists (running or stopped)
     try:
         result = subprocess.run(
-            ["docker", "ps", "-a", "-q", "--filter", "name=archon-container"],
+            ["docker", "ps", "-a", "-q", "--filter", "name=meta_agent-container"],
             check=True,
             capture_output=True,
             text=True
         )
         if result.stdout.strip():
-            print("\n=== Removing existing Archon container ===")
+            print("\n=== Removing existing Meta_agent container ===")
             container_id = result.stdout.strip()
             print(f"Found container with ID: {container_id}")
             
@@ -116,11 +116,11 @@ def main():
         print(f"Error checking for existing containers: {e}")
         pass
     
-    # Run the Archon container
-    print("\n=== Starting Archon container ===")
+    # Run the Meta_agent container
+    print("\n=== Starting Meta_agent container ===")
     cmd = [
         "docker", "run", "-d",
-        "--name", "archon-container",
+        "--name", "meta_agent-container",
         "-p", "8501:8501",
         "-p", "8100:8100",
         "--add-host", "host.docker.internal:host-gateway"
@@ -131,20 +131,20 @@ def main():
         cmd.extend(env_args)
     
     # Add image name
-    cmd.append("archon:latest")
+    cmd.append("meta_agent:latest")
     
     if run_command(cmd) != 0:
-        print("Error starting Archon container")
+        print("Error starting Meta_agent container")
         return 1
     
     # Wait a moment for the container to start
     time.sleep(2)
     
     # Print success message
-    print("\n=== Archon is now running! ===")
+    print("\n=== Meta_agent is now running! ===")
     print("-> Access the Streamlit UI at: http://localhost:8501")
     print("-> MCP container is ready to use - see the MCP tab in the UI.")
-    print("\nTo stop Archon, run: docker stop archon-container && docker rm archon-container")
+    print("\nTo stop Meta_agent, run: docker stop meta_agent-container && docker rm meta_agent-container")
     
     return 0
 

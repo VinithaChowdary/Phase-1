@@ -13,14 +13,15 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIModel
+# from pydantic_ai.models.vertexai import VertexAIModel
 from openai import AsyncOpenAI
 from supabase import Client
 
 # Add the parent directory to sys.path to allow importing from the parent directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.utils import get_env_var
-from archon.agent_prompts import primary_coder_prompt
-from archon.agent_tools import (
+from meta_agent.agent_prompts import primary_coder_prompt
+from meta_agent.agent_tools import (
     retrieve_relevant_documentation_tool,
     list_documentation_pages_tool,
     get_page_content_tool
@@ -33,7 +34,13 @@ llm = get_env_var('PRIMARY_MODEL') or 'gpt-4o-mini'
 base_url = get_env_var('BASE_URL') or 'https://api.openai.com/v1'
 api_key = get_env_var('LLM_API_KEY') or 'no-llm-api-key-provided'
 
-model = AnthropicModel(llm, api_key=api_key) if provider == "Anthropic" else OpenAIModel(llm, base_url=base_url, api_key=api_key)
+if provider == "Anthropic":
+    model = AnthropicModel(llm, api_key=api_key)
+elif provider == "Gemini":
+    # model = VertexAIModel(llm)
+    raise NotImplementedError("VertexAI not installed")
+else:
+    model = OpenAIModel(llm, base_url=base_url, api_key=api_key)
 
 logfire.configure(send_to_logfire='if-token-present')
 

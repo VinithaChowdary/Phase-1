@@ -1,9 +1,10 @@
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIModel
+# from pydantic_ai.models.vertexai import VertexAIModel
 from pydantic_ai import Agent, RunContext
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
-from typing import TypedDict, Annotated, List, Any
+from typing import TypedDict, Annotated, List, Any, Optional
 from langgraph.config import get_stream_writer
 from langgraph.types import interrupt
 from dotenv import load_dotenv
@@ -16,17 +17,21 @@ import sys
 # Import the message classes from Pydantic AI
 from pydantic_ai.messages import (
     ModelMessage,
-    ModelMessagesTypeAdapter
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    TextPart,
+    UserPromptPart
 )
 
 # Add the parent directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from archon.pydantic_ai_coder import pydantic_ai_coder, PydanticAIDeps
-from archon.advisor_agent import advisor_agent, AdvisorDeps
-from archon.refiner_agents.prompt_refiner_agent import prompt_refiner_agent
-from archon.refiner_agents.tools_refiner_agent import tools_refiner_agent, ToolsRefinerDeps
-from archon.refiner_agents.agent_refiner_agent import agent_refiner_agent, AgentRefinerDeps
-from archon.agent_tools import list_documentation_pages_tool
+from meta_agent.pydantic_ai_coder import pydantic_ai_coder, PydanticAIDeps
+from meta_agent.advisor_agent import advisor_agent, AdvisorDeps
+from meta_agent.refiner_agents.prompt_refiner_agent import prompt_refiner_agent
+from meta_agent.refiner_agents.tools_refiner_agent import tools_refiner_agent, ToolsRefinerDeps
+from meta_agent.refiner_agents.agent_refiner_agent import agent_refiner_agent, AgentRefinerDeps
+from meta_agent.evaluator_agent import evaluator_agent, ConfidenceScore
+from meta_agent.agent_tools import list_documentation_pages_tool
 from utils.utils import get_env_var, get_clients
 
 # Load environment variables
@@ -41,9 +46,17 @@ api_key = get_env_var('LLM_API_KEY') or 'no-llm-api-key-provided'
 
 is_anthropic = provider == "Anthropic"
 is_openai = provider == "OpenAI"
+is_gemini = provider == "Gemini"
 
 reasoner_llm_model_name = get_env_var('REASONER_MODEL') or 'o3-mini'
-reasoner_llm_model = AnthropicModel(reasoner_llm_model_name, api_key=api_key) if is_anthropic else OpenAIModel(reasoner_llm_model_name, base_url=base_url, api_key=api_key)
+
+if is_anthropic:
+    reasoner_llm_model = AnthropicModel(reasoner_llm_model_name, api_key=api_key)
+elif is_gemini:
+    # reasoner_llm_model = VertexAIModel(reasoner_llm_model_name)
+    raise NotImplementedError("VertexAI not installed")
+else:
+    reasoner_llm_model = OpenAIModel(reasoner_llm_model_name, base_url=base_url, api_key=api_key)
 
 reasoner = Agent(  
     reasoner_llm_model,
@@ -51,7 +64,14 @@ reasoner = Agent(
 )
 
 primary_llm_model_name = get_env_var('PRIMARY_MODEL') or 'gpt-4o-mini'
-primary_llm_model = AnthropicModel(primary_llm_model_name, api_key=api_key) if is_anthropic else OpenAIModel(primary_llm_model_name, base_url=base_url, api_key=api_key)
+
+if is_anthropic:
+    primary_llm_model = AnthropicModel(primary_llm_model_name, api_key=api_key)
+elif is_gemini:
+    # primary_llm_model = VertexAIModel(primary_llm_model_name)
+    raise NotImplementedError("VertexAI not installed")
+else:
+    primary_llm_model = OpenAIModel(primary_llm_model_name, base_url=base_url, api_key=api_key)
 
 router_agent = Agent(  
     primary_llm_model,
@@ -78,6 +98,12 @@ class AgentState(TypedDict):
     refined_prompt: str
     refined_tools: str
     refined_agent: str
+
+    # New fields for Adaptive Graph Execution
+    confidence_score: float
+    refinement_count: int
+    evaluation_feedback: str
+    refinement_targets: List[str]
 
 # Scope Definition Node with Reasoner LLM
 async def define_scope_with_reasoner(state: AgentState):
@@ -114,15 +140,15 @@ async def define_scope_with_reasoner(state: AgentState):
     with open(scope_path, "w", encoding="utf-8") as f:
         f.write(scope)
     
-    return {"scope": scope}
+    return {"scope": scope, "refinement_count": 0} # Initialize count
 
 # Advisor agent - create a starting point based on examples and prebuilt tools/MCP servers
 async def advisor_with_examples(state: AgentState):
-    # Get the directory one level up from the current file (archon_graph.py)
+    # Get the directory one level up from the current file (meta_agent_graph.py)
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
     
-    # The agent-resources folder is adjacent to the parent folder of archon_graph.py
+    # The agent-resources folder is adjacent to the parent folder of meta_agent_graph.py
     agent_resources_dir = os.path.join(parent_dir, "agent-resources")
     
     # Get a list of all files in the agent-resources directory and its subdirectories
@@ -174,11 +200,16 @@ async def coder_agent(state: AgentState, writer):
 
         Output any changes necessary to the agent code based on these refinements.
         """
+        
+        # Inject the evaluation feedback if it exists so the model knows WHY it is refining
+        if 'evaluation_feedback' in state and state['evaluation_feedback']:
+             prompt += f"\n\nReasons for refinement (CRITICAL feedback):\n{state['evaluation_feedback']}"
+
     else:
         prompt = state['latest_user_message']
 
     # Run the agent in a stream
-    if not is_openai:
+    if not (is_openai or is_gemini):
         writer = get_stream_writer()
         result = await pydantic_ai_coder.run(prompt, deps=deps, message_history=message_history)
         writer(result.data)
@@ -192,8 +223,6 @@ async def coder_agent(state: AgentState, writer):
             async for chunk in result.stream_text(delta=True):
                 writer(chunk)
 
-    # print(ModelMessagesTypeAdapter.validate_json(result.new_messages_json()))
-
     # Add the new conversation history (including tool calls)
     # Reset the refined properties in case they were just used to refine the agent
     return {
@@ -202,6 +231,58 @@ async def coder_agent(state: AgentState, writer):
         "refined_tools": "",
         "refined_agent": ""
     }
+
+# Evaluator Node
+async def evaluate_code(state: AgentState):
+    # Get the message history into the format for Pydantic AI
+    message_history: list[ModelMessage] = []
+    for message_row in state['messages']:
+        message_history.extend(ModelMessagesTypeAdapter.validate_json(message_row))
+    
+    prompt = "Analyze the latest agent implementation in the conversation history."
+    
+    result = await evaluator_agent.run(prompt, message_history=message_history)
+    score_data: ConfidenceScore = result.data
+    
+    print(f"Evaluation Confidence: {score_data.score}")
+    print(f"Refinement Needed: {score_data.needs_refinement}")
+    if score_data.needs_refinement:
+        print(f"Refinement Targets: {score_data.refinement_targets}")
+        print(f"Feedback: {score_data.reasoning}")
+
+    # Determine if we should increment refinement count
+    current_count = state.get("refinement_count", 0)
+    new_count = current_count
+    if score_data.needs_refinement:
+        new_count += 1
+
+    return {
+        "confidence_score": score_data.score,
+        "evaluation_feedback": score_data.reasoning,
+        "refinement_targets": score_data.refinement_targets,
+        "refinement_count": new_count
+    }
+
+# Adaptive Routing based on Confidence
+def route_evaluation(state: AgentState):
+    score = state.get("confidence_score", 1.0)
+    count = state.get("refinement_count", 0)
+    targets = state.get("refinement_targets", [])
+    
+    # If confidence is low AND we haven't tried too many times AND we have targets
+    if score < 0.8 and count <= 3 and targets:
+        # Map targets to node names
+        next_nodes = []
+        if "prompt" in targets: next_nodes.append("refine_prompt")
+        if "tools" in targets: next_nodes.append("refine_tools")
+        if "agent" in targets: next_nodes.append("refine_agent")
+        
+        if next_nodes:
+            return next_nodes
+            
+    # Otherwise, proceed to user
+    return "get_next_user_message"
+
 
 # Interrupt the graph to get the user's next message
 def get_next_user_message(state: AgentState):
@@ -237,7 +318,10 @@ async def refine_prompt(state: AgentState):
     for message_row in state['messages']:
         message_history.extend(ModelMessagesTypeAdapter.validate_json(message_row))
 
-    prompt = "Based on the current conversation, refine the prompt for the agent."
+    prompt = "Based on the current conversation and the evaluation feedback, refine the prompt for the agent."
+    
+    if 'evaluation_feedback' in state and state['evaluation_feedback']:
+        prompt += f"\n\nEvaluation Feedback to address: {state['evaluation_feedback']}"
 
     # Run the agent to refine the prompt for the agent being created
     result = await prompt_refiner_agent.run(prompt, message_history=message_history)
@@ -258,7 +342,10 @@ async def refine_tools(state: AgentState):
     for message_row in state['messages']:
         message_history.extend(ModelMessagesTypeAdapter.validate_json(message_row))
 
-    prompt = "Based on the current conversation, refine the tools for the agent."
+    prompt = "Based on the current conversation and the evaluation feedback, refine the tools for the agent."
+    
+    if 'evaluation_feedback' in state and state['evaluation_feedback']:
+        prompt += f"\n\nEvaluation Feedback to address: {state['evaluation_feedback']}"
 
     # Run the agent to refine the tools for the agent being created
     result = await tools_refiner_agent.run(prompt, deps=deps, message_history=message_history)
@@ -278,7 +365,10 @@ async def refine_agent(state: AgentState):
     for message_row in state['messages']:
         message_history.extend(ModelMessagesTypeAdapter.validate_json(message_row))
 
-    prompt = "Based on the current conversation, refine the agent definition."
+    prompt = "Based on the current conversation and the evaluation feedback, refine the agent definition."
+    
+    if 'evaluation_feedback' in state and state['evaluation_feedback']:
+        prompt += f"\n\nEvaluation Feedback to address: {state['evaluation_feedback']}"
 
     # Run the agent to refine the definition for the agent being created
     result = await agent_refiner_agent.run(prompt, deps=deps, message_history=message_history)
@@ -293,7 +383,7 @@ async def finish_conversation(state: AgentState, writer):
         message_history.extend(ModelMessagesTypeAdapter.validate_json(message_row))
 
     # Run the agent in a stream
-    if not is_openai:
+    if not (is_openai or is_gemini):
         writer = get_stream_writer()
         result = await end_conversation_agent.run(state['latest_user_message'], message_history= message_history)
         writer(result.data)   
@@ -315,6 +405,7 @@ builder = StateGraph(AgentState)
 builder.add_node("define_scope_with_reasoner", define_scope_with_reasoner)
 builder.add_node("advisor_with_examples", advisor_with_examples)
 builder.add_node("coder_agent", coder_agent)
+builder.add_node("evaluate_code", evaluate_code)
 builder.add_node("get_next_user_message", get_next_user_message)
 builder.add_node("refine_prompt", refine_prompt)
 builder.add_node("refine_tools", refine_tools)
@@ -326,12 +417,21 @@ builder.add_edge(START, "define_scope_with_reasoner")
 builder.add_edge(START, "advisor_with_examples")
 builder.add_edge("define_scope_with_reasoner", "coder_agent")
 builder.add_edge("advisor_with_examples", "coder_agent")
-builder.add_edge("coder_agent", "get_next_user_message")
+
+# New logic: coder -> evaluate -> [adaptive routing]
+builder.add_edge("coder_agent", "evaluate_code")
+builder.add_conditional_edges(
+    "evaluate_code",
+    route_evaluation,
+    ["get_next_user_message", "refine_prompt", "refine_tools", "refine_agent"]
+)
+
 builder.add_conditional_edges(
     "get_next_user_message",
     route_user_message,
     ["coder_agent", "finish_conversation", "refine_prompt", "refine_tools", "refine_agent"]
 )
+
 builder.add_edge("refine_prompt", "coder_agent")
 builder.add_edge("refine_tools", "coder_agent")
 builder.add_edge("refine_agent", "coder_agent")

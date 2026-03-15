@@ -23,6 +23,9 @@ async def get_embedding(text: str, embedding_client: AsyncOpenAI) -> List[float]
 
 async def retrieve_relevant_documentation_tool(supabase: Client, embedding_client: AsyncOpenAI, user_query: str) -> str:
     try:
+        if supabase is None:
+            return "Supabase client not initialized."
+
         # Get the embedding for the query
         query_embedding = await get_embedding(user_query, embedding_client)
         
@@ -66,6 +69,9 @@ async def list_documentation_pages_tool(supabase: Client) -> List[str]:
         List[str]: List of unique URLs for all documentation pages
     """
     try:
+        if supabase is None:
+            return []
+
         # Query Supabase for unique URLs where source is pydantic_ai_docs
         result = supabase.from_('site_pages') \
             .select('url') \
@@ -95,6 +101,9 @@ async def get_page_content_tool(supabase: Client, url: str) -> str:
         str: The complete page content with all chunks combined in order
     """
     try:
+        if supabase is None:
+            return f"Supabase client not initialized for URL: {url}"
+
         # Query Supabase for all chunks of this URL, ordered by chunk_number
         result = supabase.from_('site_pages') \
             .select('title, content, chunk_number') \
@@ -138,4 +147,4 @@ def get_file_content_tool(file_path: str) -> str:
         return file_contents
     except Exception as e:
         print(f"Error retrieving file contents: {e}")
-        return f"Error retrieving file contents: {str(e)}"           
+        return f"Error retrieving file contents: {str(e)}"

@@ -1,7 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "agent": "./archon_graph.py:agentic_flow"
+    "agent": "./meta_agent_graph.py:agentic_flow"
   },
   "env": "../.env"
 }

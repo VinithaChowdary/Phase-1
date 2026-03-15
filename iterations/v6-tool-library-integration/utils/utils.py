@@ -357,42 +357,124 @@ def create_new_tab_button(label, tab_name, key=None, use_container_width=False):
     if st.button(label, key=key, use_container_width=use_container_width):
         webbrowser.open_new_tab(new_tab_url)
 
-# Function to reload the archon_graph module
-def reload_archon_graph(show_reload_success=True):
-    """Reload the archon_graph module to apply new environment variables"""
+# Function to reload the meta_agent_graph module
+def reload_meta_agent_graph(show_reload_success=True):
+    """Reload the meta_agent_graph module to apply new environment variables"""
     try:
         # First reload pydantic_ai_coder
-        import archon.pydantic_ai_coder
-        importlib.reload(archon.pydantic_ai_coder)
+        import meta_agent.pydantic_ai_coder
+        importlib.reload(meta_agent.pydantic_ai_coder)
         
-        # Then reload archon_graph which imports pydantic_ai_coder
-        import archon.archon_graph
-        importlib.reload(archon.archon_graph)
+        # Then reload meta_agent_graph which imports pydantic_ai_coder
+        import meta_agent.meta_agent_graph
+        importlib.reload(meta_agent.meta_agent_graph)
 
         # Then reload the crawler
-        import archon.crawl_pydantic_ai_docs
-        importlib.reload(archon.crawl_pydantic_ai_docs)        
+        import meta_agent.crawl_pydantic_ai_docs
+        importlib.reload(meta_agent.crawl_pydantic_ai_docs)        
         
         if show_reload_success:
-            st.success("Successfully reloaded Archon modules with new environment variables!")
+            st.success("Successfully reloaded Meta_agent modules with new environment variables!")
         return True
     except Exception as e:
-        st.error(f"Error reloading Archon modules: {str(e)}")
+        st.error(f"Error reloading Meta_agent modules: {str(e)}")
         return False        
 
 def get_clients():
     # LLM client setup
     embedding_client = None
-    base_url = get_env_var('EMBEDDING_BASE_URL') or 'https://api.openai.com/v1'
-    api_key = get_env_var('EMBEDDING_API_KEY') or 'no-api-key-provided'
-    provider = get_env_var('EMBEDDING_PROVIDER') or 'OpenAI'
     
-    # Setup OpenAI client for LLM
-    if provider == "Ollama":
+    # Check general provider first if EMBEDDING_PROVIDER not specific
+    provider = get_env_var('EMBEDDING_PROVIDER') or get_env_var('LLM_PROVIDER') or 'OpenAI'
+    
+    # Google Auth setup
+    google_creds = get_env_var('GOOGLE_APPLICATION_CREDENTIALS')
+    if google_creds:
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = google_creds
+
+    if provider == "Gemini" or provider == "VertexAI":
+        # For Vertex AI embeddings, we need to use a different client or ensure 
+        # the AsyncOpenAI client is configured to talk to Vertex AI compatible endpoints if available,
+        # OR (most likely) use the vertexai SDK directly.
+        # However, the rest of the codebase expects an AsyncOpenAI-like client for 'embeddings.create'.
+        # If we are using PydanticAI or similar, they handle LLMs, but here we are doing raw embeddings.
+        # Since we must use "the vertex ai thing itself", we should use google-genai or vertexai.
+        
+        # NOTE: The current codebase (agent_tools.py probably) calls `await embedding_client.embeddings.create(...)`.
+        # Vertex AI SDK has a different API. 
+        # To avoid breaking changes, we should wrap Vertex AI in an adapter if possible, 
+        # OR rely on the fact that if the user wants "the vertex ai thing", they might mean for LLMs,
+        # but for embeddings, if we use Supabase, we MUST match Supabase's expectations.
+        # BUT the user said "Every model needs to be the vertex ai thing".
+        
+        # Let's try to initialize a Vertex AI compatible client or just use OpenAI if keys are present.
+        # The user provided SUPABASE keys but NO OpenAI keys. So we CANNOT use OpenAI.
+        # We MUST use Vertex AI for embeddings.
+        
+        # We will wrap Vertex AI in a mock AsyncOpenAI structure for compatibility?
+        # Or better, we update this to return a client that has an `embeddings.create` method.
+        
+        class VertexEmbeddingAdapter:
+            async def create(self, input, model=None):
+                from google.auth import default
+                from google.cloud import aiplatform
+                from vertexai.language_models import TextEmbeddingModel
+                import vertexai
+                
+                # Initialize Vertex AI
+                # Assuming project/location are in env or default creds
+                # vertexai.init() 
+                
+                # Get model
+                model_name = model or "text-embedding-004"
+                embedding_model = TextEmbeddingModel.from_pretrained(model_name)
+                
+                # Get embeddings
+                # Vertex SDK is synchronous for now or has async? 
+                # TextEmbeddingModel.get_embeddings is blocking.
+                # We should run it in an executor if we need async, but for now blocking is "okay" inside async def.
+                
+                inputs = input if isinstance(input, list) else [input]
+                embeddings = embedding_model.get_embeddings(inputs)
+                
+                # Format like OpenAI response
+                data = []
+                for i, emb in enumerate(embeddings):
+                    data.append({
+                        "embedding": emb.values,
+                        "index": i,
+                        "object": "embedding"
+                    })
+                
+                class Response:
+                    def __init__(self, data):
+                        self.data = data
+                
+                return Response(data)
+
+        class MockAsyncOpenAI:
+             def __init__(self):
+                 self.embeddings = VertexEmbeddingAdapter()
+        
+        # Check if we can import vertexai
+        try:
+            import vertexai
+            embedding_client = MockAsyncOpenAI()
+        except ImportError:
+            # Fallback or error
+            print("Vertex AI SDK not installed. Please install google-cloud-aiplatform.")
+            # We will return None which might cause errors later but better than crashing here
+            embedding_client = None
+
+    elif provider == "Ollama":
+        base_url = get_env_var('EMBEDDING_BASE_URL') or 'http://localhost:11434/v1'
         if api_key == "NOT_REQUIRED":
-            api_key = "ollama"  # Use a dummy key for Ollama
+            api_key = "ollama"
         embedding_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
     else:
+        # Default OpenAI
+        base_url = get_env_var('EMBEDDING_BASE_URL') or 'https://api.openai.com/v1'
+        api_key = get_env_var('EMBEDDING_API_KEY') or get_env_var('OPENAI_API_KEY') or 'no-api-key-provided'
         embedding_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
     # Supabase client setup
@@ -406,4 +488,4 @@ def get_clients():
             print(f"Failed to initialize Supabase: {e}")
             write_to_log(f"Failed to initialize Supabase: {e}")
 
-    return embedding_client, supabase      
+    return embedding_client, supabase

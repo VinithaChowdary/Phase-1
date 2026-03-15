@@ -6,7 +6,7 @@ import streamlit as st
 
 def load_css():
     """
-    Load the custom CSS styles for the Archon UI.
+    Load the custom CSS styles for the Meta_agent UI.
     """
     st.markdown("""
         <style>
